@@ -1,236 +1,162 @@
+import tkinter as tk
+from tkinter import messagebox
 import numpy as np
-import random
+from PIL import Image, ImageOps, ImageGrab
+import pickle
+from scipy.ndimage import center_of_mass
+from scipy.ndimage.interpolation import shift
+from NeuronNetwork import  *
+# -------------------------------------------------
+# Load the trained model
+# -------------------------------------------------
+model_file = "trained_nn_mnist.pkl"
+with open(model_file, 'rb') as f:
+    nn = pickle.load(f)
 
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
+# -------------------------------------------------
+# Helper Functions
+# -------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# 1. Our Custom Neural Network Classes (as from your codebase NeuronNetwork.py)
-# ---------------------------------------------------------------------------
-def cross_entropy_loss(y_true, y_pred):
-    y_pred = np.clip(y_pred, 1e-12, 1 - 1e-12)
-    return -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
+def center_image(image_array):
+    """
+    Center the digit in the 28x28 grid by shifting the center of mass to the center.
 
-def mse_loss(y_true, y_pred):
-    return np.mean((y_true - y_pred)**2)
+    Args:
+        image_array (np.array): Array of shape (28, 28).
 
-def mae_loss(y_true, y_pred):
-    return np.mean(np.abs(y_true - y_pred))
+    Returns:
+        np.array: Centered image array.
+    """
+    cy, cx = center_of_mass(image_array)
+    shift_y = 14 - int(cy)  # 14 is the center of a 28x28 image
+    shift_x = 14 - int(cx)
+    return shift(image_array, shift=(shift_y, shift_x), mode='constant')
 
-class Layer:
-    def __init__(self, input_dim, output_dim, activation='relu'):
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.activation = activation.lower()
+def preprocess_canvas_data(canvas_image):
+    """
+    Process the canvas data to match the MNIST format.
 
-        # Initialize weights and biases
-        self.weights = np.random.randn(output_dim, input_dim)
-        self.bias_vector = np.random.randn(output_dim)
+    Args:
+        canvas_image (PIL.Image): Image object from the canvas.
 
-        # Storage for forward pass
-        self.pre_activation = None
-        self.output = None
+    Returns:
+        np.array: Flattened array of shape (1, 784) for prediction.
+    """
+    # Ensure the image is grayscale
+    img = canvas_image.convert("L")
 
-    def _apply_activation(self, z):
-        if self.activation == 'relu':
-            return np.maximum(0, z)
-        elif self.activation == 'sigmoid':
-            return 1 / (1 + np.exp(-z))
-        elif self.activation == 'tanh':
-            return np.tanh(z)
-        elif self.activation == 'linear':
-            return z
-        else:
-            raise ValueError(f"Unknown activation: {self.activation}")
+    # Resize to 28x28 pixels (MNIST format)
+    img = img.resize((28, 28), Image.Resampling.LANCZOS)
 
-    def apply_activation_derivative(self):
-        if self.activation == 'relu':
-            return np.where(self.pre_activation > 0, 1, 0)
-        elif self.activation == 'sigmoid':
-            return self.output * (1 - self.output)
-        elif self.activation == 'tanh':
-            return 1 - self.output**2
-        elif self.activation == 'linear':
-            return np.ones_like(self.pre_activation)
-        else:
-            raise ValueError(f"Unknown activation function: {self.activation}")
+    # Normalize pixel values to [0, 1]
+    img_array = np.array(img) / 255.0
 
-    def feed(self, input_vector):
-        self.pre_activation = self.weights.dot(input_vector) + self.bias_vector
-        self.output = self._apply_activation(self.pre_activation)
-        return self.output
+    # Invert colors (MNIST digits are white on black background)
+    img_array = 1 - img_array
 
-class NeuronNetwork:
-    def __init__(self, layers, learning_rate=0.01, loss_type='mse'):
-        self.layers = layers
-        self.learning_rate = learning_rate
+    # Center the digit
+    img_array = center_image(img_array)
 
-        if loss_type == 'cross_entropy':
-            self.loss_fn = cross_entropy_loss
-        elif loss_type == 'mse':
-            self.loss_fn = mse_loss
-        elif loss_type == 'mae':
-            self.loss_fn = mae_loss
-        else:
-            raise ValueError("loss_type must be 'cross_entropy', 'mse', or 'mae'.")
-        self.loss_type = loss_type
+    # Save for debugging (optional)
+    Image.fromarray((img_array * 255).astype('uint8')).save("preprocessed_digit.png")
 
-    def forward_propagate(self, input_vector):
-        for layer in self.layers:
-            input_vector = layer.feed(input_vector)
-        return input_vector
+    # Flatten the image
+    return img_array.flatten().reshape(1, -1)
 
-    def fit_single(self, input_vector, actual_output):
-        # Forward pass
-        output = self.forward_propagate(input_vector)
+def predict_digit(canvas_image):
+    """
+    Predict the digit using the trained neural network.
 
-        # Error
-        error = output - actual_output
+    Args:
+        canvas_image (PIL.Image): Image object from the canvas.
 
-        # Backprop
-        for layer_index in reversed(range(len(self.layers))):
-            layer = self.layers[layer_index]
-            delta = error * layer.apply_activation_derivative()
+    Returns:
+        int: Predicted digit
+    """
+    processed_data = preprocess_canvas_data(canvas_image)
+    prediction = nn.predict(processed_data)
+    return prediction[0]
 
-            # Update weights
-            if layer_index == 0:
-                prev_output = input_vector
-            else:
-                prev_output = self.layers[layer_index - 1].output
+# -------------------------------------------------
+# GUI Implementation
+# -------------------------------------------------
 
-            layer.weights -= self.learning_rate * np.outer(delta, prev_output)
-            layer.bias_vector -= self.learning_rate * delta
+class DigitRecognizerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Digit Recognizer")
 
-            if layer_index > 0:
-                error = layer.weights.T @ delta
+        # Canvas for drawing
+        self.canvas = tk.Canvas(root, width=280, height=280, bg="white")
+        self.canvas.grid(row=0, column=0, padx=10, pady=10)
 
-        return self.loss_fn(actual_output, output)
+        # Buttons
+        self.predict_button = tk.Button(root, text="Predict", command=self.predict)
+        self.predict_button.grid(row=1, column=0, pady=5)
 
-    def train(self, inputs, outputs, epochs=1000, print_interval=100):
-        for epoch in range(epochs):
-            total_loss = 0
-            for x, y in zip(inputs, outputs):
-                total_loss += self.fit_single(x, y)
-            if epoch % print_interval == 0:
-                avg_loss = total_loss / len(inputs)
-                print(f"Epoch {epoch}, {self.loss_type} loss: {avg_loss:.6f}")
+        self.clear_button = tk.Button(root, text="Clear", command=self.clear_canvas)
+        self.clear_button.grid(row=2, column=0, pady=5)
 
-    def pred(self, input_vector):
-        return self.forward_propagate(input_vector)
+        # Drawing state
+        self.drawing = False
+        self.last_x, self.last_y = None, None
 
-# ---------------------------------------------------------------------------
-# 2. Helper Functions for One-Hot Encoding & Data Generation
-# ---------------------------------------------------------------------------
-def one_hot_eye_color(eye_color):
-    vec = np.zeros(3)
-    idx = min(max(eye_color, 0), 2)
-    vec[idx] = 1
-    return vec
+        # Bind mouse events for drawing
+        self.canvas.bind("<Button-1>", self.start_draw)
+        self.canvas.bind("<B1-Motion>", self.draw)
+        self.canvas.bind("<ButtonRelease-1>", self.stop_draw)
 
-def one_hot_hair_color(hair_color):
-    vec = np.zeros(4)
-    idx = min(max(hair_color - 1, 0), 3)
-    vec[idx] = 1
-    return vec
+    def start_draw(self, event):
+        self.drawing = True
+        self.last_x, self.last_y = event.x, event.y
 
-def scale_height(h):
-    return (h - 1.5) / 0.5  # map [1.5, 2.0] to [0, 1]
+    def draw(self, event):
+        if self.drawing:
+            x, y = event.x, event.y
+            self.canvas.create_line((self.last_x, self.last_y, x, y), width=10, fill="black", capstyle=tk.ROUND, smooth=True)
+            self.last_x, self.last_y = x, y
 
-def generate_one_hot_sample(height, eye_c, hair_c, scale=True):
-    h_val = scale_height(height) if scale else height
-    e_vec = one_hot_eye_color(eye_c)
-    h_vec = one_hot_hair_color(hair_c)
-    return np.concatenate(([h_val], e_vec, h_vec))
+    def stop_draw(self, event):
+        self.drawing = False
 
-def generate_fake_dataset_one_hot(size=30, scale=True):
-    inputs = []
-    outputs = []
-    for _ in range(size):
-        height = 1.5 + random.random() * 0.5
-        eye_color = random.choice([0,1,2])
-        hair_color = random.choice([1,2,3,4])
+    def clear_canvas(self):
+        self.canvas.delete("all")
 
-        # "secret formula" for attractiveness
-        score = 0.0
-        score += (height - 1.5) * 1.2
-        if eye_color == 1:
-            score += 0.1
-        elif eye_color == 2:
-            score += 0.05
-        if hair_color == 2:
-            score += 0.1
-        elif hair_color == 3:
-            score += 0.2
-        elif hair_color == 4:
-            score += 0.15
-        else:
-            score += 0.05
+    def predict(self):
+        # Get the canvas content as an image
+        canvas_image = self.get_canvas_image()
 
-        # clamp
-        score = max(0, min(score, 1))
+        # Predict the digit
+        predicted_digit = predict_digit(canvas_image)
 
-        x_vec = generate_one_hot_sample(height, eye_color, hair_color, scale=scale)
-        inputs.append(x_vec)
-        outputs.append(score)
+        # Show result
+        messagebox.showinfo("Prediction", f"Predicted Digit: {predicted_digit}")
 
-    return np.array(inputs), np.array(outputs)
+    def get_canvas_image(self):
+        """
+        Capture the current state of the canvas as a PIL Image.
 
-# ---------------------------------------------------------------------------
-# 3. MAIN - Compare with Random Forest & KNN
-# ---------------------------------------------------------------------------
+        Returns:
+            PIL.Image: Image object of the canvas
+        """
+        # Get the canvas coordinates
+        x = self.canvas.winfo_rootx()
+        y = self.canvas.winfo_rooty()
+        w = x + self.canvas.winfo_width()
+        h = y + self.canvas.winfo_height()
+
+        # Capture the canvas area from the screen
+        canvas_image = ImageGrab.grab(bbox=(x, y, w, h))
+
+        # Convert to grayscale
+        canvas_image = canvas_image.convert("L")
+
+        return canvas_image
+
+# -------------------------------------------------
+# Run the Application
+# -------------------------------------------------
 if __name__ == "__main__":
-    # Generate data
-    X, y = generate_fake_dataset_one_hot(size=1000, scale=True)
-
-    # Split data into train/test
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=42
-    )
-
-    # 3.1 Train Our Custom Neural Network
-    layer1 = Layer(8, 6, 'relu')    
-    layer2 = Layer(6, 3, 'relu')    
-    layer3 = Layer(3, 1, 'sigmoid') 
-    net = NeuronNetwork(
-        layers=[layer1, layer2, layer3],
-        learning_rate=0.05,
-        loss_type='mse'
-    )
-
-    print("Training Custom Neural Network...\n")
-    net.train(
-        inputs=X_train,
-        outputs=y_train,
-        epochs=1000,
-        print_interval=500
-    )
-
-    # Evaluate custom NN on the test set
-    y_pred_nn = np.array([net.pred(x)[0] for x in X_test])  
-    mse_nn = mean_squared_error(y_test, y_pred_nn)
-
-    print(f"\nCustom NN Test MSE = {mse_nn:.6f}")
-
-    # 3.2 Random Forest Regressor
-    print("\nTraining Random Forest Regressor...")
-    rf = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf.fit(X_train, y_train)
-    y_pred_rf = rf.predict(X_test)
-    mse_rf = mean_squared_error(y_test, y_pred_rf)
-    print(f"Random Forest Test MSE = {mse_rf:.6f}")
-
-    # 3.3 K-Nearest Neighbors Regressor
-    print("\nTraining KNN Regressor...")
-    knn = KNeighborsRegressor(n_neighbors=5)
-    knn.fit(X_train, y_train)
-    y_pred_knn = knn.predict(X_test)
-    mse_knn = mean_squared_error(y_test, y_pred_knn)
-    print(f"KNN Test MSE = {mse_knn:.6f}")
-
-    # Show final comparison
-    print("\n---- Final Comparison (Test MSE) ----")
-    print(f"Custom Neural Network: {mse_nn:.6f}")
-    print(f"Random Forest       : {mse_rf:.6f}")
-    print(f"KNN                 : {mse_knn:.6f}")
+    root = tk.Tk()
+    app = DigitRecognizerApp(root)
+    root.mainloop()
