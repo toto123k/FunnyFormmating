@@ -11,6 +11,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.metrics import accuracy_score
 
+k="https://playcode.io/2305104"
 
 # -------------------------------------------------
 # 1. LOSS FUNCTIONS
