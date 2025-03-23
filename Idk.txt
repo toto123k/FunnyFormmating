@@ -1,0 +1,55 @@
+function toRad(deg) {
+  return deg * Math.PI / 180;
+}
+
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371000; // Earth radius in meters
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function timeDifferenceInSeconds(time1, time2) {
+  return Math.abs(new Date(time1) - new Date(time2)) / 1000;
+}
+
+function groupLunches(lunches) {
+  // First, sort the lunches by time (earliest first)
+  const sortedLunches = lunches.slice().sort((a, b) => new Date(a.time) - new Date(b.time));
+  
+  // Reduce over the sorted lunches and build up an array of events
+  return sortedLunches.reduce((events, lunch) => {
+    // Find an existing event whose main lunch can group this lunch
+    const event = events.find(evt => {
+      // Only consider events where the time difference is within 3 minutes (180 seconds)
+      if (timeDifferenceInSeconds(evt.main.time, lunch.time) > 180) return false;
+   
+      return haversineDistance(evt.main.lat, evt.main.lon, lunch.lat, lunch.lon) <= 150;
+    });
+    
+    if (event) {
+
+      event.subs.push(lunch);
+    } else {
+
+      events.push({ main: lunch, subs: [] });
+    }
+    
+    return events;
+  }, []);
+}
+
+const lunches = [
+  { lat: 40.7128, lon: -74.0060, time: "2025-03-21T10:00:00Z" }, // main event 1
+  { lat: 40.7129, lon: -74.0061, time: "2025-03-21T10:01:30Z" }, // sub of event 1
+  { lat: 40.7306, lon: -73.9352, time: "2025-03-21T10:02:00Z" }, // separate event
+  { lat: 40.7127, lon: -74.0062, time: "2025-03-21T10:04:00Z" }, // will group with event 3 (if within 3 min/150m)
+  { lat: 40.7128, lon: -74.0060, time: "2025-03-21T10:04:10Z" }  // may group with same event as above
+];
+
+const events = groupLunches(lunches);
+console.log(JSON.stringify(events, null, 2));
